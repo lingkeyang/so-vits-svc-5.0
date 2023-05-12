@@ -44,7 +44,7 @@ class TextEncoder(nn.Module):
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
-        return z, m, logs, x_mask
+        return z, m, logs, x_mask, x
 
 
 class ResidualCouplingBlock(nn.Module):
@@ -172,7 +172,7 @@ class SynthesizerTrn(nn.Module):
 
     def forward(self, ppg, pit, spec, spk, ppg_l, spec_l):
         g = self.emb_g(F.normalize(spk)).unsqueeze(-1)
-        z_p, m_p, logs_p, ppg_mask = self.enc_p(
+        z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
             ppg, ppg_l, f0=f0_to_coarse(pit))
         z_q, m_q, logs_q, spec_mask = self.enc_q(spec, spec_l, g=g)
 
@@ -186,7 +186,7 @@ class SynthesizerTrn(nn.Module):
         return audio, ids_slice, spec_mask, (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r)
 
     def infer(self, ppg, pit, spk, ppg_l):
-        z_p, m_p, logs_p, ppg_mask = self.enc_p(
+        z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
             ppg, ppg_l, f0=f0_to_coarse(pit))
         z, _ = self.flow(z_p, ppg_mask, g=spk, reverse=True)
         o = self.dec(spk, z * ppg_mask, f0=pit)
@@ -233,7 +233,7 @@ class SynthesizerInfer(nn.Module):
         return self.dec.source2wav(source)
 
     def inference(self, ppg, pit, spk, ppg_l, source):
-        z_p, m_p, logs_p, ppg_mask = self.enc_p(
+        z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
             ppg, ppg_l, f0=f0_to_coarse(pit))
         z, _ = self.flow(z_p, ppg_mask, g=spk, reverse=True)
         o = self.dec.inference(spk, z * ppg_mask, source)

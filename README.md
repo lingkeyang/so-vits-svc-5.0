@@ -6,22 +6,39 @@
 <img alt="GitHub issues" src="https://img.shields.io/github/issues/PlayVoice/so-vits-svc-5.0">
 <img alt="GitHub" src="https://img.shields.io/github/license/PlayVoice/so-vits-svc-5.0">
 
-【无需去伴奏】就能直接进行歌声转换的SVC库（轻度伴奏）
+![sovits_framework](https://github.com/PlayVoice/so-vits-svc-5.0/assets/16432329/402cf58d-6d03-4d0b-9d6a-94f079898672)
 
-【使用Excel】进行原始的SVC调教
+【无 泄漏】支持多发音人的SVC库
 
-## 本项目更新中，代码还有性能缺陷（13K以上高频是模糊的），不推荐现在就用这套代码训练，测试模型测试用的~
+【带 伴奏】也能进行歌声转换的SVC库（轻度伴奏）
 
-| Feature | From | Status | Function |
-| --- | --- | --- | --- |
-| whisper | OpenAI | ✅ | 强大的抗噪能力 |
-| bigvgan  | NVIDA | ✅ | 抗锯齿与蛇形激活 |
-| nature speech | Microsoft | ✅ | 减少发音错误 |
-| neural source-filter | NII | ✅ | 解决断音问题 |
-| speaker encoder | Google | ✅ | 音色编码与聚类 |
-| GRL for speaker | Skoltech |✅ |防止编码器泄露音色 |
-| one shot vits |  Samsung | ✅ | VITS 一句话克隆 |
-| band extention | Adobe | ✅ | 16K升48K采样 |
+【用 Excel】进行原始的SVC手工调教
+
+![sonic visualiser](https://user-images.githubusercontent.com/16432329/237011482-51f3a45e-72c6-4d4a-b1df-f561d1df7132.png)
+
+## 本项目与svc-develop-team/so-vits-svc仓库的关系
+
+svc-develop-team/so-vits-svc基于PlayVoice/VI-SVC演变而来，见https://github.com/svc-develop-team/so-vits-svc/tree/2.0
+
+本项目是PlayVoice/VI-SVC的继续完善，而非基于svc-develop-team/so-vits-svc
+
+## 本项目预览模型已发布，还需要更多的时间训练到最佳状态
+
+- 预览模型包括：生成器+判别器=194M，设置batch_size为8时，训练占用7.5G显存，学习门槛大大降低
+- 预览模型包含56个发音人，发音人文件在configs/singers目录中，可进行推理测试，尤其测试音色泄露
+- 发音人22，30，47，51辨识度较高，发音人样本在configs/singers_sample目录中
+
+| Feature | From | Status | Function | Remarks |
+| --- | --- | --- | --- | --- |
+| whisper | OpenAI | ✅ | 强大的抗噪能力 | 必须 |
+| bigvgan  | NVIDA | ✅ | 抗锯齿与蛇形激活 | 删除，GPU占用过多 |
+| natural speech | Microsoft | ✅ | 减少发音错误 | 二阶段训练 |
+| neural source-filter | NII | ✅ | 解决断音问题 | 必须 |
+| speaker encoder | Google | ✅ | 音色编码与聚类 | 必须 |
+| GRL for speaker | Skoltech |✅ |防止编码器泄露音色 | 二阶段训练 |
+| one shot vits |  Samsung | ✅ | VITS 一句话克隆 | 必须 |
+| SCLN |  Microsoft | ✅ | 改善克隆 | 必须 |
+| band extention | Adobe | ✅ | 16K升48K采样 | 数据处理 |
 
 ## 模型简介
 歌声音色转换模型，通过SoftVC内容编码器提取源音频语音特征，与F0同时输入VITS替换原本的文本输入达到歌声转换的效果。同时，更换声码器为 [NSF HiFiGAN](https://github.com/openvpi/DiffSinger/tree/refactor/modules/nsf_hifigan) 解决断音问题
@@ -36,7 +53,13 @@
 
 
 ## 数据集准备
-仅需要以以下文件结构将数据集放入dataset_raw目录即可
+
+💗必要的前处理：
+- 1 降噪&去伴奏
+- 2 频率提升
+- 3 音质提升，基于https://github.com/openvpi/vocoders ，待整合
+
+然后以下面文件结构将数据集放入dataset_raw目录
 ```shell
 dataset_raw
 ├───speaker0
@@ -61,7 +84,7 @@ dataset_raw
 
 
 ## 数据预处理
-- 1， 设置工作目录
+- 1， 设置工作目录:heartpulse::heartpulse::heartpulse:不设置后面会报错
 
     > export PYTHONPATH=$PWD
 
@@ -73,11 +96,11 @@ dataset_raw
 
     > python prepare/preprocess_a.py -w ./data_raw -o ./data_svc/waves-16k -s 16000
 
-    生成采样率48000Hz音频, 存储路径为：./data_svc/waves-48k
+    生成采样率32000Hz音频, 存储路径为：./data_svc/waves-32k
 
-    > python prepare/preprocess_a.py -w ./data_raw -o ./data_svc/waves-48k -s 48000
+    > python prepare/preprocess_a.py -w ./data_raw -o ./data_svc/waves-32k -s 32000
 
-    可选的16000Hz提升到48000Hz，待完善~批处理
+    可选的16000Hz提升到32000Hz，待完善~批处理
 
     > python bandex/inference.py -w svc_out.wav
 
@@ -90,10 +113,10 @@ dataset_raw
 - 5， 使用16k音频，提取音色编码
     > python prepare/preprocess_speaker.py data_svc/waves-16k/ data_svc/speaker
 
-- 6， 使用48k音频，提取线性谱
-    > python prepare/preprocess_spec.py -w data_svc/waves-48k/ -s data_svc/specs
+- 6， 使用32k音频，提取线性谱
+    > python prepare/preprocess_spec.py -w data_svc/waves-32k/ -s data_svc/specs
 
-- 7， 使用48k音频，生成训练索引
+- 7， 使用32k音频，生成训练索引
     > python prepare/preprocess_train.py
 
 - 8， 训练文件调试
@@ -101,28 +124,37 @@ dataset_raw
 
 
 ## 训练
+- 1， 设置工作目录:heartpulse::heartpulse::heartpulse:不设置后面会报错
 
-启动训练
+    > export PYTHONPATH=$PWD
 
-> python svc_trainer.py -c configs/base.yaml -n sovits5.0
+- 2， 启动训练，一阶段训练
 
-恢复训练
+    > python svc_trainer.py -c configs/base.yaml -n sovits5.0
 
-> python svc_trainer.py -c configs/base.yaml -n sovits5.0 -p chkpt/sovits5.0/***.pth
+- 3， 恢复训练
 
-查看日志
+    > python svc_trainer.py -c configs/base.yaml -n sovits5.0 -p chkpt/sovits5.0/***.pth
 
-> tensorboard --logdir logs/
+- 4， 查看日志，release页面有完整的训练日志
 
-![snac](https://user-images.githubusercontent.com/16432329/234463836-ddf6d806-ccd1-452c-9961-1467ce26f304.png)
+    > tensorboard --logdir logs/
+
+- 5， 启动训练，二阶段训练:heartpulse:
+
+    二阶段训练内容：PPG扰动，GRL去音色，natural speech推理loss;验证中~~~
+
+    > python svc_trainer.py -c configs/more.yaml -n more -e 1
+
+20K一阶段训练日志如下，可以看到还未收敛完成
+
+![sovits5 0 preview](https://github.com/PlayVoice/so-vits-svc-5.0/assets/16432329/339c11d5-67dd-426a-ba19-077d66efc953)
+
+![sovits_spec](https://github.com/PlayVoice/so-vits-svc-5.0/assets/16432329/c4223cf3-b4a0-4325-bec0-6d46d195a1fc)
 
 ## 推理
 
-### 可以下载release页面的sovits5.0_48k_debug.pth模型，进行推理测试
-### 模型包含56个发音人，在configs/singers目录中，可用于测试音色泄露
-### 4个辨识度较高的发音人样本，在configs/singers_sample目录中
-
-- 1， 设置工作目录
+- 1， 设置工作目录:heartpulse::heartpulse::heartpulse:不设置后面会报错
 
     > export PYTHONPATH=$PWD
 
@@ -136,9 +168,11 @@ dataset_raw
 
     生成test.ppg.npy；如果下一步没有指定ppg文件，则调用程序自动生成
 
-- 4， 提取csv文本格式F0参数，Excel打开csv文件，对照Audition手动修改错误的F0
+- 4， 提取csv文本格式F0参数，Excel打开csv文件，对照Audition或者SonicVisualiser手动修改错误的F0
 
     > python pitch/inference.py -w test.wav -p test.csv
+
+![Audition ](https://user-images.githubusercontent.com/16432329/237006512-9ef97936-df00-4b2d-ab76-921c383eb616.png)
 
 - 5，指定参数，推理
 
@@ -150,14 +184,9 @@ dataset_raw
 
     生成文件在当前目录svc_out.wav；
 
-    | args | name |
-    | --- | --- |
-    |--config   | 配置文件 |
-    |--model    | 模型文件 |
-    |--spk      | 音色文件 |
-    |--wave     | 音频文件 |
-    |--ppg      | 音频内容 |
-    |--pit      | 音高内容 |
+    | args |--config | --model | --spk | --wave | --ppg | --pit |          
+    | ---  | --- | --- | --- | --- | --- | --- |
+    | name | 配置文件 | 模型文件 | 音色文件 | 音频文件 | 音频内容 | 音高内容 |
 
 ## 数据集
 
@@ -192,11 +221,19 @@ https://github.com/mindslab-ai/univnet [[paper]](https://arxiv.org/abs/2106.0788
 
 https://github.com/nii-yamagishilab/project-NN-Pytorch-scripts/tree/master/project/01-nsf
 
+https://github.com/brentspell/hifi-gan-bwe
+
+https://github.com/mozilla/TTS
+
 [SNAC : Speaker-normalized Affine Coupling Layer in Flow-based Architecture for Zero-Shot Multi-Speaker Text-to-Speech](https://github.com/hcy71o/SNAC)
 
 [Adapter-Based Extension of Multi-Speaker Text-to-Speech Model for New Speakers](https://arxiv.org/abs/2211.00585)
 
 [AdaSpeech: Adaptive Text to Speech for Custom Voice](https://arxiv.org/pdf/2103.00993.pdf)
+
+[Cross-Speaker Prosody Transfer on Any Text for Expressive Speech Synthesis](https://github.com/ubisoft/ubisoft-laforge-daft-exprt)
+
+[Learn to Sing by Listening: Building Controllable Virtual Singer by Unsupervised Learning from Voice Recordings](https://arxiv.org/abs/2305.05401)
 
 ## 贡献者
 

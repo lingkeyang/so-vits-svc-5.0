@@ -18,7 +18,7 @@ from vits_extend.stft import TacotronSTFT
 from vits_extend.stft_loss import MultiResolutionSTFTLoss
 from vits_extend.validation import validate
 from vits_decoder.discriminator import Discriminator
-from vits.models import SynthesizerTrn
+from vits.modelsEx import SynthesizerTrn
 from vits import commons
 from vits.losses import kl_loss
 from vits.commons import clip_grad_value_
@@ -33,7 +33,7 @@ def load_pretrain(path, model):
         state_dict = model.state_dict()
     new_state_dict = {}
     for k, v in state_dict.items():
-        if k.startswith('TODO'):
+        if k.startswith('speaker_classifier'):
             new_state_dict[k] = v
         else:
             new_state_dict[k] = saved_state_dict[k]
@@ -58,6 +58,8 @@ def train(rank, args, chkpt_path, hp, hp_str):
         hp.data.segment_size // hp.data.hop_length,
         hp).to(device)
     model_d = Discriminator(hp).to(device)
+
+    model_g.extend_train()
 
     optim_g = torch.optim.AdamW(model_g.parameters(),
                                 lr=hp.train.learning_rate, betas=hp.train.betas, eps=hp.train.eps)
@@ -95,10 +97,10 @@ def train(rank, args, chkpt_path, hp, hp_str):
         writer = MyWriter(hp, log_dir)
         valloader = create_dataloader_eval(hp)
 
-    if os.path.isfile(hp.train.pretrain):
-        if rank == 0:
-            logger.info("Start from 32k pretrain model: %s" % hp.train.pretrain)
-        load_pretrain(hp.train.pretrain, model_g)
+    assert os.path.isfile(hp.train.pretrain), "train for extend nead pretrain model"
+    if rank == 0:
+        logger.info("Start from 32k pretrain model: %s" % hp.train.pretrain)
+    load_pretrain(hp.train.pretrain, model_g)
 
     if chkpt_path is not None:
         if rank == 0:
@@ -130,6 +132,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hp.train.lr_decay, last_epoch=init_epoch-2)
 
     stft_criterion = MultiResolutionSTFTLoss(device, eval(hp.mrd.resolutions))
+    vpr_loss = nn.CosineEmbeddingLoss()
 
     trainloader = create_dataloader_train(hp, args.num_gpus, rank)
 
@@ -164,13 +167,15 @@ def train(rank, args, chkpt_path, hp, hp_str):
             optim_g.zero_grad()
 
             fake_audio, ids_slice, z_mask, \
-                (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r) = model_g(
+                (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r), spk_preds = model_g(
                     ppg, pit, spec, spk, ppg_l, spec_l)
 
 
             audio = commons.slice_segments(
                 audio, ids_slice * hp.data.hop_length, hp.data.segment_size)  # slice
-
+            # Spk Loss
+            spk_loss = vpr_loss(spk, spk_preds, torch.Tensor(spk_preds.size(0))
+                                .to(device).fill_(1.0))
             # Mel Loss
             mel_fake = stft.mel_spectrogram(fake_audio.squeeze(1))
             mel_real = stft.mel_spectrogram(audio.squeeze(1))
@@ -201,7 +206,7 @@ def train(rank, args, chkpt_path, hp, hp_str):
             loss_kl_r = kl_loss(z_r, logs_p, m_q, logs_q, logdet_r, z_mask) * hp.train.c_kl
 
             # Loss
-            loss_g = score_loss + feat_loss + mel_loss + stft_loss + loss_kl_f
+            loss_g = score_loss + feat_loss + mel_loss + stft_loss + loss_kl_f + loss_kl_r * 0.1 + spk_loss
             loss_g.backward()
             clip_grad_value_(model_g.parameters(),  None)
             optim_g.step()
@@ -229,12 +234,13 @@ def train(rank, args, chkpt_path, hp, hp_str):
             loss_m = mel_loss.item()
             loss_k = loss_kl_f.item()
             loss_r = loss_kl_r.item()
+            loss_i = spk_loss.item()
 
             if rank == 0 and step % hp.log.info_interval == 0:
                 writer.log_training(
                     loss_g, loss_d, loss_m, loss_s, loss_k, loss_r, score_loss.item(), step)
-                logger.info("g %.04f m %.04f s %.04f d %.04f k %.04f r %.04f | step %d" % (
-                    loss_g, loss_m, loss_s, loss_d, loss_k, loss_r, step))
+                logger.info("g %.04f m %.04f s %.04f d %.04f k %.04f r %.04f i %.04f | step %d" % (
+                    loss_g, loss_m, loss_s, loss_d, loss_k, loss_r, loss_i, step))
 
         if rank == 0 and epoch % hp.log.save_interval == 0:
             save_path = os.path.join(pth_dir, '%s_%04d.pt'
