@@ -1,4 +1,5 @@
-import os
+import sys,os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import torch
 import argparse
 import numpy as np
@@ -16,7 +17,11 @@ def load_svc_model(checkpoint_path, model):
     state_dict = model.state_dict()
     new_state_dict = {}
     for k, v in state_dict.items():
-        new_state_dict[k] = saved_state_dict[k]
+        try:
+            new_state_dict[k] = saved_state_dict[k]
+        except:
+            print("%s is not in the checkpoint" % k)
+            new_state_dict[k] = v
     model.load_state_dict(new_state_dict)
     return model
 
@@ -27,6 +32,12 @@ def main(args):
         print(
             f"Auto run : python whisper/inference.py -w {args.wave} -p {args.ppg}")
         os.system(f"python whisper/inference.py -w {args.wave} -p {args.ppg}")
+
+    if (args.vec == None):
+        args.vec = "svc_tmp.vec.npy"
+        print(
+            f"Auto run : python hubert/inference.py -w {args.wave} -v {args.vec}")
+        os.system(f"python hubert/inference.py -w {args.wave} -v {args.vec}")
 
     if (args.pit == None):
         args.pit = "svc_tmp.pit.csv"
@@ -50,35 +61,38 @@ def main(args):
     ppg = np.load(args.ppg)
     ppg = np.repeat(ppg, 2, 0)  # 320 PPG -> 160 * 2
     ppg = torch.FloatTensor(ppg)
+    # ppg = torch.zeros_like(ppg)
+
+    vec = np.load(args.vec)
+    vec = np.repeat(vec, 2, 0)  # 320 PPG -> 160 * 2
+    vec = torch.FloatTensor(vec)
+    # vec = torch.zeros_like(vec)
 
     pit = load_csv_pitch(args.pit)
-    if (args.statics == None):
-        print("don't use pitch shift")
+    print("pitch shift: ", args.shift)
+    if (args.shift == 0):
+        pass
     else:
+        pit = np.array(pit)
         source = pit[pit > 0]
         source_ave = source.mean()
         source_min = source.min()
         source_max = source.max()
         print(f"source pitch statics: mean={source_ave:0.1f}, \
                 min={source_min:0.1f}, max={source_max:0.1f}")
-        singer_ave, singer_min, singer_max = np.load(args.statics)
-        print(f"singer pitch statics: mean={singer_ave:0.1f}, \
-                min={singer_min:0.1f}, max={singer_max:0.1f}")
-
-        shift = np.log2(singer_ave/source_ave) * 12
-        if (singer_ave >= source_ave):
-            shift = np.floor(shift)
-        else:
-            shift = np.ceil(shift)
+        shift = args.shift
         shift = 2 ** (shift / 12)
         pit = pit * shift
 
     pit = torch.FloatTensor(pit)
 
     len_pit = pit.size()[0]
+    len_vec = vec.size()[0]
     len_ppg = ppg.size()[0]
-    len_min = min(len_pit, len_ppg)
+    len_min = min(len_pit, len_vec)
+    len_min = min(len_min, len_ppg)
     pit = pit[:len_min]
+    vec = vec[:len_min, :]
     ppg = ppg[:len_min, :]
 
     with torch.no_grad():
@@ -114,11 +128,12 @@ def main(args):
                 cut_e_out = -1 * hop_frame * hop_size
 
             sub_ppg = ppg[cut_s:cut_e, :].unsqueeze(0).to(device)
+            sub_vec = vec[cut_s:cut_e, :].unsqueeze(0).to(device)
             sub_pit = pit[cut_s:cut_e].unsqueeze(0).to(device)
             sub_len = torch.LongTensor([cut_e - cut_s]).to(device)
             sub_har = source[:, :, cut_s *
                              hop_size:cut_e * hop_size].to(device)
-            sub_out = model.inference(sub_ppg, sub_pit, spk, sub_len, sub_har)
+            sub_out = model.inference(sub_ppg, sub_vec, sub_pit, spk, sub_len, sub_har)
             sub_out = sub_out[0, 0].data.cpu().detach().numpy()
 
             sub_out = sub_out[cut_s_out:cut_e_out]
@@ -133,10 +148,11 @@ def main(args):
                 cut_s = 0
                 cut_s_out = 0
             sub_ppg = ppg[cut_s:, :].unsqueeze(0).to(device)
+            sub_vec = vec[cut_s:, :].unsqueeze(0).to(device)
             sub_pit = pit[cut_s:].unsqueeze(0).to(device)
             sub_len = torch.LongTensor([all_frame - cut_s]).to(device)
             sub_har = source[:, :, cut_s * hop_size:].to(device)
-            sub_out = model.inference(sub_ppg, sub_pit, spk, sub_len, sub_har)
+            sub_out = model.inference(sub_ppg, sub_vec, sub_pit, spk, sub_len, sub_har)
             sub_out = sub_out[0, 0].data.cpu().detach().numpy()
 
             sub_out = sub_out[cut_s_out:]
@@ -158,10 +174,12 @@ if __name__ == '__main__':
                         help="Path of speaker.")
     parser.add_argument('--ppg', type=str,
                         help="Path of content vector.")
+    parser.add_argument('--vec', type=str,
+                        help="Path of hubert vector.")
     parser.add_argument('--pit', type=str,
                         help="Path of pitch csv file.")
-    parser.add_argument('--statics', type=str,
-                        help="Path of pitch statics.")
+    parser.add_argument('--shift', type=int, default=0,
+                        help="Pitch shift key.")
     args = parser.parse_args()
 
     main(args)

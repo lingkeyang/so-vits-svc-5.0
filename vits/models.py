@@ -8,11 +8,13 @@ from vits import commons
 from vits import modules
 from vits.utils import f0_to_coarse
 from vits_decoder.generator import Generator
+from vits.modules_grl import SpeakerClassifier
 
 
 class TextEncoder(nn.Module):
     def __init__(self,
                  in_channels,
+                 vec_channels,
                  out_channels,
                  hidden_channels,
                  filter_channels,
@@ -23,6 +25,7 @@ class TextEncoder(nn.Module):
         super().__init__()
         self.out_channels = out_channels
         self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=5, padding=2)
+        self.hub = nn.Conv1d(vec_channels, hidden_channels, kernel_size=5, padding=2)
         self.pit = nn.Embedding(256, hidden_channels)
         self.enc = attentions.Encoder(
             hidden_channels,
@@ -33,13 +36,15 @@ class TextEncoder(nn.Module):
             p_dropout)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, x, x_lengths, f0):
+    def forward(self, x, x_lengths, v, f0):
         x = torch.transpose(x, 1, -1)  # [b, h, t]
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
             x.dtype
         )
         x = self.pre(x) * x_mask
-        x = x + self.pit(f0).transpose(1, 2)
+        v = torch.transpose(v, 1, -1)  # [b, h, t]
+        v = self.hub(v) * x_mask
+        x = x + v + self.pit(f0).transpose(1, 2)
         x = self.enc(x * x_mask, x_mask)
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
@@ -143,6 +148,7 @@ class SynthesizerTrn(nn.Module):
         self.emb_g = nn.Linear(hp.vits.spk_dim, hp.vits.gin_channels)
         self.enc_p = TextEncoder(
             hp.vits.ppg_dim,
+            hp.vits.vec_dim,
             hp.vits.inter_channels,
             hp.vits.hidden_channels,
             hp.vits.filter_channels,
@@ -150,6 +156,10 @@ class SynthesizerTrn(nn.Module):
             6,
             3,
             0.1,
+        )
+        self.speaker_classifier = SpeakerClassifier(
+            hp.vits.hidden_channels,
+            hp.vits.spk_dim,
         )
         self.enc_q = PosteriorEncoder(
             spec_channels,
@@ -170,10 +180,12 @@ class SynthesizerTrn(nn.Module):
         )
         self.dec = Generator(hp=hp)
 
-    def forward(self, ppg, pit, spec, spk, ppg_l, spec_l):
+    def forward(self, ppg, vec, pit, spec, spk, ppg_l, spec_l):
+        ppg = ppg + torch.randn_like(ppg) * 1  # Perturbation
+        vec = vec + torch.randn_like(vec) * 2  # Perturbation
         g = self.emb_g(F.normalize(spk)).unsqueeze(-1)
         z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
-            ppg, ppg_l, f0=f0_to_coarse(pit))
+            ppg, ppg_l, vec, f0=f0_to_coarse(pit))
         z_q, m_q, logs_q, spec_mask = self.enc_q(spec, spec_l, g=g)
 
         z_slice, pit_slice, ids_slice = commons.rand_slice_segments_with_pitch(
@@ -183,11 +195,14 @@ class SynthesizerTrn(nn.Module):
         # SNAC to flow
         z_f, logdet_f = self.flow(z_q, spec_mask, g=spk)
         z_r, logdet_r = self.flow(z_p, spec_mask, g=spk, reverse=True)
-        return audio, ids_slice, spec_mask, (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r)
+        # speaker
+        spk_preds = self.speaker_classifier(x)
+        return audio, ids_slice, spec_mask, (z_f, z_r, z_p, m_p, logs_p, z_q, m_q, logs_q, logdet_f, logdet_r), spk_preds
 
-    def infer(self, ppg, pit, spk, ppg_l):
+    def infer(self, ppg, vec, pit, spk, ppg_l):
+        ppg = ppg + torch.randn_like(ppg) * 0.0001  # Perturbation
         z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
-            ppg, ppg_l, f0=f0_to_coarse(pit))
+            ppg, ppg_l, vec, f0=f0_to_coarse(pit))
         z, _ = self.flow(z_p, ppg_mask, g=spk, reverse=True)
         o = self.dec(spk, z * ppg_mask, f0=pit)
         return o
@@ -204,6 +219,7 @@ class SynthesizerInfer(nn.Module):
         self.segment_size = segment_size
         self.enc_p = TextEncoder(
             hp.vits.ppg_dim,
+            hp.vits.vec_dim,
             hp.vits.inter_channels,
             hp.vits.hidden_channels,
             hp.vits.filter_channels,
@@ -232,9 +248,9 @@ class SynthesizerInfer(nn.Module):
     def source2wav(self, source):
         return self.dec.source2wav(source)
 
-    def inference(self, ppg, pit, spk, ppg_l, source):
+    def inference(self, ppg, vec, pit, spk, ppg_l, source):
         z_p, m_p, logs_p, ppg_mask, x = self.enc_p(
-            ppg, ppg_l, f0=f0_to_coarse(pit))
+            ppg, ppg_l, vec, f0=f0_to_coarse(pit))
         z, _ = self.flow(z_p, ppg_mask, g=spk, reverse=True)
         o = self.dec.inference(spk, z * ppg_mask, source)
         return o

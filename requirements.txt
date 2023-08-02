@@ -1,14 +1,13 @@
 fsspec
-ffmpeg-python
-praat-parselmouth
 pyworld
 matplotlib
 soundfile
 scikit-learn
 scipy
-torchcrepe
 tensorboard
 transformers
 tqdm
 librosa
 omegaconf
+gradio==3.36.1
+ruamel.yaml

@@ -1,28 +1,24 @@
-import os
+import sys,os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import librosa
 import argparse
 import numpy as np
-import torchcrepe
+import crepe
 
 
-def compute_f0_nn(filename, device):
+def compute_f0_voice(filename, device):
     audio, sr = librosa.load(filename, sr=16000)
     assert sr == 16000
-    # Load audio
     audio = torch.tensor(np.copy(audio))[None]
-    # Here we'll use a 20 millisecond hop length
-    hop_length = 320
-    # Provide a sensible frequency range for your domain (upper limit is 2006 Hz)
-    # This would be a reasonable range for speech
+    audio = audio + torch.randn_like(audio) * 0.001
+    # Here we'll use a 10 millisecond hop length
+    hop_length = 160
     fmin = 50
     fmax = 1000
-    # Select a model capacity--one of "tiny" or "full"
     model = "full"
-    # Pick a batch size that doesn't cause memory errors on your gpu
     batch_size = 512
-    # Compute pitch using first gpu
-    pitch, periodicity = torchcrepe.predict(
+    pitch = crepe.predict(
         audio,
         sr,
         hop_length,
@@ -31,14 +27,37 @@ def compute_f0_nn(filename, device):
         model,
         batch_size=batch_size,
         device=device,
-        return_periodicity=True,
+        return_periodicity=False,
+    )
+    pitch = crepe.filter.mean(pitch, 5)
+    pitch = pitch.squeeze(0)
+    return pitch
+
+
+def compute_f0_sing(filename, device):
+    audio, sr = librosa.load(filename, sr=16000)
+    assert sr == 16000
+    audio = torch.tensor(np.copy(audio))[None]
+    audio = audio + torch.randn_like(audio) * 0.001
+    # Here we'll use a 20 millisecond hop length
+    hop_length = 320
+    fmin = 50
+    fmax = 1000
+    model = "full"
+    batch_size = 512
+    pitch = crepe.predict(
+        audio,
+        sr,
+        hop_length,
+        fmin,
+        fmax,
+        model,
+        batch_size=batch_size,
+        device=device,
+        return_periodicity=False,
     )
     pitch = np.repeat(pitch, 2, -1)  # 320 -> 160 * 2
-    periodicity = np.repeat(periodicity, 2, -1)  # 320 -> 160 * 2
-    # CREPE was not trained on silent audio. some error on silent need filter.pitPath
-    periodicity = torchcrepe.filter.median(periodicity, 9)
-    pitch = torchcrepe.filter.mean(pitch, 9)
-    pitch[periodicity < 0.1] = 0
+    pitch = crepe.filter.mean(pitch, 5)
     pitch = pitch.squeeze(0)
     return pitch
 
@@ -73,7 +92,7 @@ if __name__ == "__main__":
     print(args.pit)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    pitch = compute_f0_nn(args.wav, device)
+    pitch = compute_f0_sing(args.wav, device)
     save_csv_pitch(pitch, args.pit)
     #tmp = load_csv_pitch(args.pit)
     #save_csv_pitch(tmp, "tmp.csv")
